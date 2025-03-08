@@ -1,0 +1,104 @@
+user-profile-service/
+├── package.json
+├── .env                  # Environment variables (not in git)
+├── .env.example          # Example env file for reference
+├── .gitignore
+├── README.md
+├── src/
+│   ├── app.js            # Express app setup
+│   ├── server.js         # Entry point
+│   ├── config/
+│   │   ├── database.js   # MongoDB connection
+│   │   ├── passport.js   # Authentication strategies
+│   │   └── logger.js     # Logging configuration
+│   ├── api/
+│   │   ├── routes/
+│   │   │   ├── index.js          # Route aggregator
+│   │   │   ├── auth.routes.js    # Authentication routes
+│   │   │   ├── users.routes.js   # User profile routes
+│   │   │   └── preferences.routes.js # Travel preferences routes
+│   │   ├── controllers/
+│   │   │   ├── auth.controller.js
+│   │   │   ├── users.controller.js
+│   │   │   └── preferences.controller.js
+│   │   ├── middlewares/
+│   │   │   ├── auth.middleware.js   # JWT validation
+│   │   │   ├── validation.middleware.js # Request validation
+│   │   │   └── error.middleware.js  # Error handling
+│   │   ├── validators/
+│   │   │   ├── user.validator.js
+│   │   │   └── preferences.validator.js
+│   │   └── services/
+│   │       ├── auth.service.js   # Authentication logic
+│   │       ├── user.service.js   # User business logic
+│   │       └── email.service.js  # Email notifications
+│   ├── models/
+│   │   ├── user.model.js         # User schema
+│   │   ├── preferences.model.js  # Travel preferences schema
+│   │   └── feedback.model.js     # User feedback schema
+│   └── utils/
+│       ├── error.utils.js        # Error classes
+│       ├── jwt.utils.js          # JWT helpers
+│       └── validation.utils.js   # Validation helpers
+├── tests/
+│   ├── unit/
+│   │   ├── controllers/
+│   │   └── services/
+│   └── integration/
+│       ├── auth.test.js
+│       └── users.test.js
+└── docker/
+    ├── Dockerfile
+    └── docker-compose.yml
+
+
+
+
+
+
+______________________________________________________________________________
+
+
+user-profile-service/
+├── src/
+│   ├── config/
+│   │   ├── database.js     // MongoDB connection setup
+│   │   └── passport.js     // Authentication strategies
+│   ├── controllers/
+│   │   ├── authController.js
+│   │   ├── preferencesController.js
+│   │   └── profileController.js
+│   ├── middleware/
+│   │   ├── auth.js         // JWT validation middleware
+│   │   ├── validation.js   // Request validation middleware
+│   │   └── errorHandler.js // Global error handling
+│   ├── models/
+│   │   ├── User.js         // User account model
+│   │   ├── Profile.js      // Travel profile model 
+│   │   └── Preference.js   // Travel preferences model
+│   ├── routes/
+│   │   ├── authRoutes.js
+│   │   ├── preferencesRoutes.js
+│   │   └── profileRoutes.js
+│   ├── services/
+│   │   ├── profileService.js  // Business logic for profiles
+│   │   └── preferenceService.js // Preference processing logic
+│   ├── utils/
+│   │   ├── logger.js
+│   │   └── helpers.js
+│   └── app.js             // Express application setup
+├── .env                   // Environment variables (gitignored)
+├── .gitignore
+├── package.json
+└── README.md
+*/
+
+
+
+
+
+
+
+
+
+
