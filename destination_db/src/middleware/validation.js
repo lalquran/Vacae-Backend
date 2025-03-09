@@ -33,7 +33,7 @@ exports.validateDestinationCreate = (req, res, next) => {
     }))
   });
 
-  validateRequest(req, res, next, schema);
+  validateRequest(req.body, res, next, schema);
 };
 
 // Validate destination update
@@ -61,7 +61,7 @@ exports.validateDestinationUpdate = (req, res, next) => {
     status: Joi.string().valid('active', 'inactive', 'pending')
   });
 
-  validateRequest(req, res, next, schema);
+  validateRequest(req.body, res, next, schema);
 };
 
 // Validate category creation
@@ -75,7 +75,7 @@ exports.validateCategoryCreate = (req, res, next) => {
     displayOrder: Joi.number().integer()
   });
 
-  validateRequest(req, res, next, schema);
+  validateRequest(req.body, res, next, schema);
 };
 
 // Validate category update
@@ -88,7 +88,7 @@ exports.validateCategoryUpdate = (req, res, next) => {
     displayOrder: Joi.number().integer()
   });
 
-  validateRequest(req, res, next, schema);
+  validateRequest(req.body, res, next, schema);
 };
 
 // Validate operating hours update
@@ -105,7 +105,7 @@ exports.validateOperatingHoursUpdate = (req, res, next) => {
     })).required()
   });
 
-  validateRequest(req, res, next, schema);
+  validateRequest(req.body, res, next, schema);
 };
 
 // Validate search parameters

@@ -61,9 +61,13 @@ exports.getCategoryByIdOrSlug = async (req, res, next) => {
         }
       ]
     });
-    
+
     if (!category) {
       return res.status(404).json({ message: 'Category not found' });
+    }
+
+    if (category.error) {
+      return res.status(500).json({ message: 'Server error during category query'});
     }
     
     // Cache the result
