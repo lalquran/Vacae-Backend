@@ -1,9 +1,9 @@
-const { Op, Sequelize } = require('sequelize');
+const { Op } = require('sequelize');
+const sequelize = require('../config/database');
 const Destination = require('../models/destination');
 const Category = require('../models/category');
 const OperatingHours = require('../models/operatingHours');
 const { setCache, getCache } = require('../config/redis');
-const { buildRadiusQuery } = require('../utils/geoUtils');
 const logger = require('../utils/logger');
 
 // Search destinations
@@ -14,21 +14,21 @@ exports.searchDestinations = async (req, res, next) => {
       categories, 
       costLevelMin, 
       costLevelMax, 
-      lat, 
-      lng, 
-      radius, 
       page = 1, 
       limit = 20, 
       sort = 'name', 
       order = 'ASC' 
     } = req.query;
     
-    const offset = (page - 1) * limit;
+    // Build a basic query - simplified to ensure it works
+    const sequelize = require('../config/database');
+    const Destination = require('../models/destination');
+    const { Op } = require('sequelize');
     
-    // Build where conditions
+    // Simple where conditions - just active destinations to start
     const whereConditions = { status: 'active' };
     
-    // Text search
+    // Add text search if provided
     if (query) {
       whereConditions[Op.or] = [
         { name: { [Op.iLike]: `%${query}%` } },
@@ -36,73 +36,37 @@ exports.searchDestinations = async (req, res, next) => {
       ];
     }
     
-    // Cost level range
+    // Add cost level filters if provided
     if (costLevelMin || costLevelMax) {
       whereConditions.costLevel = {};
-      if (costLevelMin) whereConditions.costLevel[Op.gte] = costLevelMin;
-      if (costLevelMax) whereConditions.costLevel[Op.lte] = costLevelMax;
+      if (costLevelMin) whereConditions.costLevel[Op.gte] = parseInt(costLevelMin);
+      if (costLevelMax) whereConditions.costLevel[Op.lte] = parseInt(costLevelMax);
     }
     
-    // Location radius search
-    if (lat && lng && radius) {
-      const radiusQuery = buildRadiusQuery(lat, lng, radius);
-      whereConditions[radiusQuery] = true;
-    }
+    // Simple query without complex joins or filtering
+    const offset = (parseInt(page) - 1) * parseInt(limit);
     
-    // Build include conditions
-    const includeConditions = [
-      {
-        model: Category,
-        as: 'categories',
-        through: { attributes: [] } // Don't include junction table
-      },
-      {
-        model: OperatingHours,
-        as: 'operatingHours'
-      }
-    ];
-    
-    // Category filter
-    if (categories) {
-      const categoryArray = categories.split(',');
-      includeConditions[0].where = { slug: { [Op.in]: categoryArray } };
-    }
-    
-    // Generate cache key
-    const cacheKey = `search:${query || 'all'}:${categories || 'all'}:${costLevelMin || '0'}:${costLevelMax || '5'}:${lat || '0'}:${lng || '0'}:${radius || '0'}:${page}:${limit}:${sort}:${order}`;
-    
-    // Try to get from cache first
-    const cachedData = await getCache(cacheKey);
-    if (cachedData) {
-      return res.status(200).json(cachedData);
-    }
-    
-    // Execute search query
-    const { count, rows: destinations } = await Destination.findAndCountAll({
+    const { count, rows } = await Destination.findAndCountAll({
       where: whereConditions,
-      include: includeConditions,
+      offset,
       limit: parseInt(limit),
-      offset: parseInt(offset),
       order: [[sort, order]],
-      distinct: true // Important for correct count with associations
     });
-    
+
+    // Return response with pagination
     const responseData = {
-      data: destinations,
+      data: rows,
       pagination: {
         total: count,
         page: parseInt(page),
         limit: parseInt(limit),
-        pages: Math.ceil(count / limit)
+        pages: Math.ceil(count / parseInt(limit))
       }
     };
     
-    // Cache the result
-    await setCache(cacheKey, responseData, 1800); // Cache for 30 minutes
-    
     res.status(200).json(responseData);
   } catch (error) {
-    logger.error('Error searching destinations:', error);
+    console.error('Search error:', error);
     next(error);
   }
 };
@@ -116,61 +80,59 @@ exports.findNearbyDestinations = async (req, res, next) => {
       return res.status(400).json({ message: 'Latitude and longitude are required' });
     }
     
-    // Generate cache key
-    const cacheKey = `nearby:${lat}:${lng}:${radius}:${categories || 'all'}:${limit}`;
+    // Convert parameters to proper types
+    const latNum = parseFloat(lat);
+    const lngNum = parseFloat(lng);
+    const radiusNum = parseFloat(radius);
+    const limitNum = parseInt(limit);
     
-    // Try to get from cache first
-    const cachedData = await getCache(cacheKey);
-    if (cachedData) {
-      return res.status(200).json({ data: cachedData });
-    }
+    // Build basic query for active destinations
+    let query = `
+      SELECT 
+        d.id, 
+        d.name, 
+        d.description,
+        d.status,
+        d."visitDuration",
+        d."costLevel",
+        ST_Distance(
+          d.location::geography, 
+          ST_SetSRID(ST_MakePoint(${lngNum}, ${latNum}), 4326)::geography
+        ) / 1000 as distance_km
+      FROM 
+        destinations d
+      WHERE 
+        d.status = 'active' AND
+        ST_DWithin(
+          d.location::geography, 
+          ST_SetSRID(ST_MakePoint(${lngNum}, ${latNum}), 4326)::geography, 
+          ${radiusNum * 1000}
+        )
+    `;
     
-    // Build radius query
-    const radiusQuery = buildRadiusQuery(lat, lng, radius);
-    
-    // Build where conditions
-    const whereConditions = { 
-      status: 'active',
-      [radiusQuery]: true
-    };
-    
-    // Build include conditions
-    const includeConditions = [
-      {
-        model: Category,
-        as: 'categories',
-        through: { attributes: [] } // Don't include junction table
-      },
-      {
-        model: OperatingHours,
-        as: 'operatingHours'
-      }
-    ];
-    
-    // Category filter
+    // Add category filter if provided
     if (categories) {
-      const categoryArray = categories.split(',');
-      includeConditions[0].where = { slug: { [Op.in]: categoryArray } };
+      query += `
+        AND d.id IN (
+          SELECT dc."destinationId" 
+          FROM destination_categories dc
+          JOIN categories c ON dc."categoryId" = c.id
+          WHERE c.slug IN (${categories.split(',').map(c => `'${c.trim()}'`).join(',')})
+        )
+      `;
     }
     
-    // Order by distance
-    const orderBy = Sequelize.literal(`ST_Distance(
-      location, 
-      ST_SetSRID(ST_MakePoint(${lng}, ${lat}), 4326)
-    )`);
+    // Add order and limit
+    query += `
+      ORDER BY distance_km ASC
+      LIMIT ${limitNum}
+    `;
     
     // Execute query
-    const destinations = await Destination.findAll({
-      where: whereConditions,
-      include: includeConditions,
-      order: [orderBy],
-      limit: parseInt(limit)
-    });
+    const sequelize = require('../config/database');
+    const [results] = await sequelize.query(query);
     
-    // Cache the result
-    await setCache(cacheKey, destinations, 1800); // Cache for 30 minutes
-    
-    res.status(200).json({ data: destinations });
+    res.status(200).json({ data: results });
   } catch (error) {
     logger.error('Error finding nearby destinations:', error);
     next(error);
@@ -183,72 +145,59 @@ exports.getOpenDestinations = async (req, res, next) => {
     const { day, time, categories, lat, lng, radius, limit = 20 } = req.query;
     
     // Determine day of week and time
-    const dayOfWeek = day ? parseInt(day) : new Date().getDay(); // 0 = Sunday, 6 = Saturday
-    const currentTime = time || new Date().toTimeString().substring(0, 8); // HH:MM:SS
+    const dayOfWeek = day ? parseInt(day) : new Date().getDay();
+    const currentTime = time || new Date().toTimeString().substring(0, 8);
     
-    // Generate cache key
-    const cacheKey = `open:${dayOfWeek}:${currentTime}:${categories || 'all'}:${lat || '0'}:${lng || '0'}:${radius || '0'}:${limit}`;
+    // Build basic query to find open destinations
+    let query = `
+      SELECT DISTINCT d.id, d.name, d.description, d.status, d."visitDuration", d."costLevel"
+      FROM destinations d
+      JOIN operating_hours oh ON d.id = oh."destinationId"
+      WHERE d.status = 'active'
+      AND oh."dayOfWeek" = ${dayOfWeek}
+      AND (
+        oh."is24Hours" = true OR
+        (oh."openTime" <= '${currentTime}' AND oh."closeTime" > '${currentTime}')
+      )
+    `;
     
-    // Try to get from cache first
-    const cachedData = await getCache(cacheKey);
-    if (cachedData) {
-      return res.status(200).json({ data: cachedData });
-    }
-    
-    // Build where conditions for operating hours
-    const operatingHoursConditions = {
-      dayOfWeek,
-      [Op.or]: [
-        { is24Hours: true },
-        {
-          [Op.and]: [
-            { openTime: { [Op.lte]: currentTime } },
-            { closeTime: { [Op.gt]: currentTime } }
-          ]
-        }
-      ]
-    };
-    
-    // Build destination where conditions
-    const whereConditions = { status: 'active' };
-    
-    // Location radius search
-    if (lat && lng && radius) {
-      const radiusQuery = buildRadiusQuery(lat, lng, radius);
-      whereConditions[radiusQuery] = true;
-    }
-    
-    // Build include conditions
-    const includeConditions = [
-      {
-        model: OperatingHours,
-        as: 'operatingHours',
-        where: operatingHoursConditions
-      },
-      {
-        model: Category,
-        as: 'categories',
-        through: { attributes: [] } // Don't include junction table
-      }
-    ];
-    
-    // Category filter
+    // Add category filter if provided
     if (categories) {
-      const categoryArray = categories.split(',');
-      includeConditions[1].where = { slug: { [Op.in]: categoryArray } };
+      query += `
+        AND d.id IN (
+          SELECT dc."destinationId" 
+          FROM destination_categories dc
+          JOIN categories c ON dc."categoryId" = c.id
+          WHERE c.slug IN (${categories.split(',').map(c => `'${c.trim()}'`).join(',')})
+        )
+      `;
     }
+    
+    // Add location filter if provided
+    if (lat && lng && radius) {
+      const latNum = parseFloat(lat);
+      const lngNum = parseFloat(lng);
+      const radiusNum = parseFloat(radius);
+      
+      query += `
+        AND ST_DWithin(
+          d.location::geography, 
+          ST_SetSRID(ST_MakePoint(${lngNum}, ${latNum}), 4326)::geography, 
+          ${radiusNum * 1000}
+        )
+      `;
+    }
+    
+    // Add limit
+    query += `
+      LIMIT ${parseInt(limit)}
+    `;
     
     // Execute query
-    const destinations = await Destination.findAll({
-      where: whereConditions,
-      include: includeConditions,
-      limit: parseInt(limit)
-    });
+    const sequelize = require('../config/database');
+    const [results] = await sequelize.query(query);
     
-    // Cache the result
-    await setCache(cacheKey, destinations, 900); // Cache for 15 minutes
-    
-    res.status(200).json({ data: destinations });
+    res.status(200).json({ data: results });
   } catch (error) {
     logger.error('Error finding open destinations:', error);
     next(error);

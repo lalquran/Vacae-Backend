@@ -51,29 +51,27 @@ exports.getCategoryByIdOrSlug = async (req, res, next) => {
       where.slug = identifier;
     }
     
-    const category = await Category.findOne({
-      where,
-      include: [
-        {
-          model: Category,
-          as: 'childCategories', // Updated to match the association alias
-          order: [['displayOrder', 'ASC']]
-        }
-      ]
-    });
-
+    // First, find the category without trying to include associations
+    const category = await Category.findOne({ where });
+    
     if (!category) {
       return res.status(404).json({ message: 'Category not found' });
     }
-
-    if (category.error) {
-      return res.status(500).json({ message: 'Server error during category query'});
-    }
+    
+    // If we found the category, now get its child categories in a separate query
+    const childCategories = await Category.findAll({
+      where: { parentId: category.id },
+      order: [['displayOrder', 'ASC']]
+    });
+    
+    // Manually add the child categories to the result
+    const result = category.toJSON();
+    result.childCategories = childCategories;
     
     // Cache the result
-    await setCache(cacheKey, category, 86400); // Cache for 24 hours
+    await setCache(cacheKey, result, 86400); // Cache for 24 hours
     
-    res.status(200).json({ data: category });
+    res.status(200).json({ data: result });
   } catch (error) {
     logger.error(`Error fetching category ${req.params.identifier}:`, error);
     next(error);

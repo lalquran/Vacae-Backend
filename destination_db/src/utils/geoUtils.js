@@ -54,25 +54,27 @@ function toRad(degrees) {
 }
 
 /**
- * Build a PostGIS search radius query for finding points within distance
+ * Build a simpler PostGIS search radius query that's more reliable
  * @param {number} lat - Latitude of center point
  * @param {number} lng - Longitude of center point
  * @param {number} radiusKm - Radius in kilometers
  * @returns {Object} Sequelize where clause object
  */
 function buildRadiusQuery(lat, lng, radiusKm) {
-  // Create the ST_DWithin function call as a literal SQL expression
-  const withinRadius = sequelize.literal(`
-    ST_DWithin(
-      location::geography,
-      ST_SetSRID(ST_MakePoint(${lng}, ${lat}), 4326)::geography,
-      ${radiusKm * 1000}
-    )
-  `);
+  // Use a simpler ST_DWithin query format that's less likely to cause issues
+  const distanceCondition = sequelize.fn(
+    'ST_DWithin',
+    sequelize.col('location'),
+    sequelize.fn(
+      'ST_SetSRID', 
+      sequelize.fn('ST_MakePoint', lng, lat), 
+      4326
+    ),
+    radiusKm * 1000 // Convert km to meters
+  );
   
-  // Return as a where condition
   return {
-    [withinRadius]: true
+    [distanceCondition]: true
   };
 }
 

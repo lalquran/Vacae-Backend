@@ -14,7 +14,7 @@ Review.init({
     allowNull: false
   },
   userId: {
-    type: DataTypes.UUID,
+    type: DataTypes.STRING, // Changed from UUID to STRING
     allowNull: false
   },
   rating: {
