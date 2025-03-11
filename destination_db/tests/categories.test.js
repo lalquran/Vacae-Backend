@@ -68,7 +68,7 @@ describe('Category API Endpoints', () => {
       const res = await request(app)
         .get('/api/categories')
         .expect(200);
-        
+
       expect(res.body.data[0].name).toBe('Attractions');
       expect(res.body.data[1].name).toBe('Museums');
     });
@@ -167,7 +167,7 @@ describe('Category API Endpoints', () => {
           slug: 'attractions', // Already exists
           description: 'This slug already exists'
         })
-        .expect(400);
+        .expect(409);
     });
     
     it('should require name field', async () => {
@@ -270,7 +270,7 @@ describe('Category API Endpoints', () => {
       await request(app)
         .delete('/api/categories/11111111-1111-1111-1111-111111111111')
         .set('Authorization', `Bearer ${adminToken}`)
-        .expect(400);
+        .expect(409);
     });
     
     it('should return 404 for non-existent category', async () => {
