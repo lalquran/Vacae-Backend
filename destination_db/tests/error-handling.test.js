@@ -39,7 +39,7 @@ describe('Error Handling', () => {
         .expect(400);
       
       expect(res.body).toHaveProperty('message');
-      expect(res.body.message).toContain('Validation error');
+      expect(res.body.message).toContain('Validation failed');
     });
     
     it('should validate coordinate ranges', async () => {
@@ -54,7 +54,7 @@ describe('Error Handling', () => {
         .expect(400);
       
       expect(res.body).toHaveProperty('message');
-      expect(res.body.message).toContain('Validation error');
+      expect(res.body.message).toContain('Validation failed');
     });
   });
   
@@ -130,7 +130,7 @@ describe('Error Handling', () => {
           slug: 'test-category', // Same slug as above
           description: 'Should fail'
         })
-        .expect(400);
+        .expect(409);
       
       expect(res.body).toHaveProperty('message');
       expect(res.body.message).toContain('already exists');

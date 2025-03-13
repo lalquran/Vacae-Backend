@@ -6,9 +6,9 @@
     "scripts": {
         "start": "node src/app.js",
         "dev": "nodemon src/app.js",
-        "test": "jest",
-        "test:watch": "jest --watch",
-        "test:coverage": "jest --coverage",
+        "test": "jest --runInBand",
+        "test:watch": "jest --watch --runInBand",
+        "test:coverage": "jest --coverage --runInBand",
         "test:categories": "jest tests/categories.test.js",
         "test:destinations": "jest tests/destinations.test.js",
         "test:search": "jest tests/search.test.js",

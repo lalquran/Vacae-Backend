@@ -1,4 +1,5 @@
 const sequelize = require('../config/database');
+
 /**
  * Utility functions for geospatial operations
  */

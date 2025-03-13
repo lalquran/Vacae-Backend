@@ -2,7 +2,8 @@ const Category = require('../models/category');
 const { setCache, getCache, deleteCache } = require('../config/redis');
 const logger = require('../utils/logger');
 const { asyncHandler } = require('../middleware/errorHandler');
-const { NotFoundError, ConflictError, DatabaseError } = require('../utils/errors');
+const sequelize = require('../config/database');
+const { NotFoundError, ConflictError, ValidationError, DatabaseError } = require('../utils/errors');
 
 // Get all categories
 exports.getAllCategories = asyncHandler(async (req, res) => {
