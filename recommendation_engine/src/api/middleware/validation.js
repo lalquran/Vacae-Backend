@@ -1,3 +1,4 @@
+const logger = require('../../../../destination_db/src/utils/logger');
 const { ValidationFailedError } = require('../../utils/errors');
 
 /**
@@ -7,19 +8,13 @@ const validate = (schema) => {
   return (req, res, next) => {
     if (!schema) return next();
 
-    // Determine which part of the request to validate
-    const dataToValidate = {};
-    if (schema.body) dataToValidate.body = req.body;
-    if (schema.query) dataToValidate.query = req.query;
-    if (schema.params) dataToValidate.params = req.params;
-
     const options = {
       abortEarly: false, // Return all errors, not just the first one
       allowUnknown: true, // Ignore unknown properties
       stripUnknown: false // Don't remove unknown properties
     };
 
-    const { error, value } = schema.validate(dataToValidate, options);
+    const { error, value } = schema.validate(req.body, options);
     
     if (error) {
       // Format validation errors
@@ -32,10 +27,7 @@ const validate = (schema) => {
     }
 
     // Update req with the validated values
-    if (value.body) req.body = value.body;
-    if (value.query) req.query = value.query;
-    if (value.params) req.params = value.params;
-
+    req.body = value;
     next();
   };
 };

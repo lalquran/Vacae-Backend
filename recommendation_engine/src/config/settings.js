@@ -17,11 +17,14 @@ module.exports = {
   REDIS_ENABLED: process.env.REDIS_ENABLED === 'true',
   
   // RabbitMQ
-  RABBITMQ_HOST: process.env.RABBITMQ_HOST || 'localhost',
+  RABBITMQ_URL: process.env.RABBITMQ_URL,
+  RABBITMQ_HOST: process.env.RABBITMQ_HOST,
   RABBITMQ_PORT: process.env.RABBITMQ_PORT || 5672,
   RABBITMQ_USER: process.env.RABBITMQ_USER || 'guest',
   RABBITMQ_PASS: process.env.RABBITMQ_PASS || 'guest',
   RABBITMQ_ENABLED: process.env.RABBITMQ_ENABLED === 'true',
+  RABBITMQ_VHOST: process.env.RABBITMQ_VHOST || '/',
+  RABBITMQ_SSL: process.env.RABBITMQ_SSL === 'true',
   
   // Service URLs
   USER_PROFILE_SERVICE_URL: process.env.USER_PROFILE_SERVICE_URL || 'http://localhost:3000',

@@ -1,42 +1,132 @@
 const amqp = require('amqplib');
-const CeleryClient = require('celery-node').Client;
 const config = require('./settings');
 const logger = require('../utils/logger');
 
-// RabbitMQ connection
+// Store connection, channel and client
 let connection = null;
 let channel = null;
 let celeryClient = null;
 
 // Initialize RabbitMQ connection
-// In config/rabbitmq.js
 const initRabbitMQ = async () => {
-    if (!config.RABBITMQ_ENABLED) {
-        logger.info('RabbitMQ is disabled in configuration');
-        return false;
-    }
-    try {
-
-      // Create connection URL
-      const rabbitUrl = `amqp://${config.RABBITMQ_USER}:${config.RABBITMQ_PASS}@${config.RABBITMQ_HOST}:${config.RABBITMQ_PORT}`;
-      
-      // Connect to RabbitMQ (with timeout to avoid hanging)
-      connection = await Promise.race([
-        amqp.connect(rabbitUrl),
-        new Promise((_, reject) => 
-          setTimeout(() => reject(new Error('RabbitMQ connection timeout')), 5000)
-        )
-      ]);
-      
-      // Rest of the code...
-    } catch (error) {
-      logger.error('Failed to initialize RabbitMQ:', error);
-      // Don't retry connection immediately in development mode
+  if (!config.RABBITMQ_ENABLED) {
+    logger.info('RabbitMQ is disabled in configuration');
+    return false;
+  }
+  
+  try {
+    // Create connection URL
+    const protocol = config.RABBITMQ_SSL ? 'amqps' : 'amqp';
+    const vhostPath = config.RABBITMQ_VHOST ? `/${encodeURIComponent(config.RABBITMQ_VHOST)}` : '';
+    const rabbitUrl = `${protocol}://${config.RABBITMQ_USER}:${config.RABBITMQ_PASS}@${config.RABBITMQ_HOST}${vhostPath}`;
+    
+    logger.info(`Connecting to RabbitMQ at ${rabbitUrl}...`);
+    
+    // Connect to RabbitMQ
+    connection = await amqp.connect(rabbitUrl);
+    
+    // Create a channel
+    channel = await connection.createChannel();
+    
+    // Set up error handlers
+    connection.on('error', (error) => {
+      logger.error('RabbitMQ connection error:', error);
+      // We'll try to reconnect if not in development
       if (config.NODE_ENV !== 'development') {
         setTimeout(initRabbitMQ, 5000);
       }
-      throw error; // Re-throw for proper handling
+    });
+    
+    connection.on('close', () => {
+      logger.warn('RabbitMQ connection closed');
+      // We'll try to reconnect if not in development
+      if (config.NODE_ENV !== 'development') {
+        setTimeout(initRabbitMQ, 5000);
+      }
+    });
+    
+    logger.info('Connected to RabbitMQ successfully');
+    
+    // Initialize Celery client if Redis is enabled
+    if (config.REDIS_ENABLED) {
+      try {
+        const celery = require('celery-node');
+        
+        // Create Redis URL for Celery backend
+        const redisUrl = `redis://${config.REDIS_HOST}:${config.REDIS_PORT}`;
+        
+        logger.info(`Initializing Celery client with Redis backend at ${redisUrl}`);
+        
+        // Create the client
+        celeryClient = celery.createClient({
+          CELERY_BROKER: rabbitUrl,
+          CELERY_BACKEND: redisUrl
+        });
+        
+        // Test the client by creating a simple task
+        const testTask = celeryClient.createTask('test');
+        if (testTask) {
+          logger.info('Celery client verified with test task creation');
+        }
+        
+        logger.info('Celery client initialized successfully');
+      } catch (celeryError) {
+        logger.error('Failed to initialize Celery client:', celeryError);
+        celeryClient = null;
+      }
+    } else {
+      logger.info('Redis is disabled, skipping Celery initialization');
+      
+      // Create a fake Celery client for development that logs instead of executing
+      celeryClient = createFakeCeleryClient();
+      logger.info('Created fake Celery client for development');
     }
+    
+    return true;
+  } catch (error) {
+    logger.error('Failed to initialize RabbitMQ:', error);
+    connection = null;
+    channel = null;
+    celeryClient = null;
+    return false;
+  }
+};
+
+// Create a fake Celery client that logs operations instead of executing them
+const createFakeCeleryClient = () => {
+    const registeredTasks = {};
+    
+    return {
+      createTask: (name) => {
+        logger.debug(`[FAKE CELERY] Creating task: ${name}`);
+        return {
+          applyAsync: (args, kwargs, options) => {
+            logger.debug(`[FAKE CELERY] Executing task ${name} with:`, { args, kwargs });
+            
+            // If the task is registered, execute it
+            if (registeredTasks[name]) {
+              try {
+                // Execute the task function with the provided arguments
+                const result = registeredTasks[name](...args, kwargs);
+                logger.debug(`[FAKE CELERY] Task ${name} completed successfully`);
+                return { taskId: `fake-${Date.now()}`, result };
+              } catch (error) {
+                logger.error(`[FAKE CELERY] Error executing task ${name}:`, error);
+                throw error;
+              }
+            } else {
+              logger.warn(`[FAKE CELERY] Task ${name} called but not registered`);
+              return { taskId: `fake-${Date.now()}` };
+            }
+          }
+        };
+      },
+      register: (name, fn) => {
+        logger.debug(`[FAKE CELERY] Registered task: ${name}`);
+        registeredTasks[name] = fn;
+        return true;
+      }
+    };
   };
 
 // Send a task to Celery
@@ -128,16 +218,13 @@ const subscribeToQueue = async (queue, callback) => {
   }
 };
 
-// Initialize on module load
-initRabbitMQ();
-
 module.exports = {
-    initRabbitMQ,
-    sendTask: async () => null, // Stub implementation
-    getTaskResult: async () => null, // Stub implementation
-    publishMessage: async () => false, // Stub implementation
-    subscribeToQueue: async () => false, // Stub implementation
-    getConnection: () => null,
-    getChannel: () => null,
-    getCeleryClient: () => null
-  };
+  initRabbitMQ,
+  sendTask,
+  getTaskResult,
+  publishMessage,
+  subscribeToQueue,
+  getConnection: () => connection,
+  getChannel: () => channel,
+  getCeleryClient: () => celeryClient
+};

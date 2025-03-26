@@ -10,10 +10,29 @@ const registerAllTasks = () => {
   const celeryClient = rabbitmq.getCeleryClient();
   
   if (!celeryClient) {
-    logger.error('Celery client not available, cannot register tasks');
+    logger.warn('Celery client not available, tasks will be registered when client becomes available');
+    
+    // You could set up a retry mechanism here
+    setTimeout(() => {
+      const retryClient = rabbitmq.getCeleryClient();
+      if (retryClient) {
+        logger.info('Celery client now available, registering tasks');
+        doRegisterTasks(retryClient);
+      } else {
+        logger.error('Celery client still not available, cannot register tasks');
+      }
+    }, 20000); // Retry after 5 seconds
+    
     return false;
   }
   
+  return doRegisterTasks(celeryClient);
+};
+
+/**
+ * Actually register the tasks with the provided client
+ */
+ const doRegisterTasks = (celeryClient) => {
   try {
     // Register each task type
     registerGenerateRecommendationTask(celeryClient);
@@ -23,6 +42,13 @@ const registerAllTasks = () => {
     return true;
   } catch (error) {
     logger.error('Error registering Celery tasks:', error);
+    
+    // Continue without task registration in development
+    if (config.NODE_ENV === 'development') {
+      logger.warn('Continuing without task registration in development mode');
+      return true;
+    }
+    
     return false;
   }
 };

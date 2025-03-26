@@ -1,9 +1,52 @@
-const { v4: uuidv4 } = require('uuid');
+const { v4: uuidv4, v5: uuidv5 } = require('uuid');
 const scoringService = require('../../services/scoringService');
 const constraintSolver = require('../../services/constraintSolver');
 const destinationService = require('../../services/destinationService');
-const Recommendation = require('../../models/recommendation');
 const logger = require('../../utils/logger');
+const jwt = require('jsonwebtoken');
+const Recommendation = require('../../models/recommendation');
+const UserToken = require('../../models/userToken');
+
+/**
+ * Storing user tokens
+ * @param {string} userId 
+ * @param {object} authHeader 
+ * @returns 
+ */
+const storeUserToken = async (userId, authHeader) => {
+  try {
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return false;
+    }
+
+    const token = authHeader.split(' ')[1];
+    
+    // Decode token to get expiration
+    const decoded = jwt.decode(token);
+    if (!decoded || !decoded.exp) {
+      return false;
+    }
+    
+    const expiresAt = new Date(decoded.exp * 1000);
+    
+    // Only store if token has at least 1 hour of validity left
+    const oneHourFromNow = new Date(Date.now() + 60 * 60 * 1000);
+    if (expiresAt < oneHourFromNow) {
+      return false;
+    }
+    
+    await UserToken.upsert({
+      userId,
+      token: authHeader, // Store full header
+      expiresAt
+    });
+    
+    return true;
+  } catch (error) {
+    logger.error('Error storing user token:', error);
+    return false;
+  }
+};
 
 /**
  * Generate recommendations based on user profile
@@ -19,6 +62,10 @@ exports.generateRecommendations = async (req, res, next) => {
       preferences = {},
       transportMode = 'walking'
     } = req.body;
+
+    const authToken = req.headers.authorization;
+
+    await storeUserToken(userId, authToken);
     
     // Validate required parameters
     if (!location || !location.latitude || !location.longitude) {
@@ -53,9 +100,13 @@ exports.generateRecommendations = async (req, res, next) => {
       weather: await getWeatherForLocation(location, date),
       availableTime: calculateAvailableTime(startTime, endTime)
     };
+
+    // Convert UserID (string) to UUID
+    const NAMESPACE = '6ba7b810-9dad-11d1-80b4-00c04fd430c8'; // This is a standard namespace UUID
+    const convertedUserId = uuidv5(userId.toString(), NAMESPACE);
     
     // Score destinations
-    const scoredDestinations = await scoringService.scoreDestinations(userId, destinationIds, context);
+    const scoredDestinations = await scoringService.scoreDestinations(convertedUserId, destinationIds, context, authToken);
     
     // Create an optimized itinerary
     const itinerary = await constraintSolver.createOptimizedItinerary(
@@ -76,7 +127,7 @@ exports.generateRecommendations = async (req, res, next) => {
       if (item.type === 'break') continue; // Skip breaks
       
       await Recommendation.create({
-        userId,
+        userId: convertedUserId,
         itineraryId,
         destinationId: item.destinationId,
         score: item.score,
@@ -116,10 +167,16 @@ exports.refineItinerary = async (req, res, next) => {
       addedConstraints = {},
       transportMode
     } = req.body;
+
+    await storeUserToken(userId, req.headers.authorization);
+
+    // Convert UserID (string) to UUID
+    const NAMESPACE = '6ba7b810-9dad-11d1-80b4-00c04fd430c8'; // This is a standard namespace UUID
+    const convertedUserId = uuidv5(userId.toString(), NAMESPACE);
     
     // Get the original itinerary
     const recommendations = await Recommendation.findAll({
-      where: { userId, itineraryId },
+      where: { userId: convertedUserId, itineraryId },
       order: [['position', 'ASC']]
     });
     
@@ -205,10 +262,15 @@ exports.saveFeedback = async (req, res, next) => {
     const { userId } = req.user;
     const { recommendationId } = req.params;
     const { rating, comments, status } = req.body;
+    const userToken = req.headers.authorization;
+
+    // Convert UserID (string) to UUID
+    const NAMESPACE = '6ba7b810-9dad-11d1-80b4-00c04fd430c8'; // This is a standard namespace UUID
+    const convertedUserId = uuidv5(userId.toString(), NAMESPACE);
     
     // Find the recommendation
     const recommendation = await Recommendation.findOne({
-      where: { id: recommendationId, userId }
+      where: { id: recommendationId, userId: convertedUserId }
     });
     
     if (!recommendation) {
@@ -252,10 +314,14 @@ exports.getItinerary = async (req, res, next) => {
   try {
     const { userId } = req.user;
     const { itineraryId } = req.params;
+
+    // Convert UserID (string) to UUID
+    const NAMESPACE = '6ba7b810-9dad-11d1-80b4-00c04fd430c8'; // This is a standard namespace UUID
+    const convertedUserId = uuidv5(userId.toString(), NAMESPACE);
     
     // Get recommendations for this itinerary
     const recommendations = await Recommendation.findAll({
-      where: { userId, itineraryId },
+      where: { userId: convertedUserId, itineraryId },
       order: [['position', 'ASC']]
     });
     
@@ -295,6 +361,30 @@ exports.getItinerary = async (req, res, next) => {
     });
   } catch (error) {
     logger.error('Error getting itinerary:', error);
+    next(error);
+  }
+};
+
+exports.updateUserPreferences = async (req, res, next) => {
+  try {
+    const { userId } = req.user;
+    const authToken = req.headers.authorization;
+    
+    logger.info(`Manually triggering preference update for user ${userId}`);
+    
+    // Store the current token
+    await storeUserToken(userId, authToken);
+    
+    // Queue the update task
+    const result = await rabbitmq.sendTask('tasks.update_user_features', [{ userId }]);
+    
+    res.status(200).json({
+      success: true,
+      message: 'User preference update has been queued',
+      taskId: result?.taskId
+    });
+  } catch (error) {
+    logger.error('Error queueing preference update:', error);
     next(error);
   }
 };

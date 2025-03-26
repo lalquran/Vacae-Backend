@@ -9,9 +9,15 @@ const sequelize = new Sequelize(
   config.DB_PASS,
   {
     host: config.DB_HOST,
-    port: config.DB_PORT,
+    port: config.DB_PORT || 5432,
     dialect: 'postgres',
-    logging: config.NODE_ENV === 'development' ? msg => logger.debug(msg) : false,
+    dialectOptions: {
+      ssl: {
+        require: true,
+        rejectUnauthorized: false // You might need this during development
+      }
+    },
+    logging: msg => logger.debug(msg),
     pool: {
       max: 10,
       min: 0,
@@ -29,6 +35,16 @@ const testConnection = async () => {
     return true;
   } catch (error) {
     logger.error('Unable to connect to the database:', error);
+    
+    // Provide more helpful messages based on error type
+    if (error.original && error.original.code === 'ECONNREFUSED') {
+      logger.error('Database server is not running or not accessible');
+    } else if (error.original && error.original.code === '3D000') {
+      logger.error('Database does not exist');
+    } else if (error.original && error.original.code === '28P01') {
+      logger.error('Invalid database credentials');
+    }
+    
     return false;
   }
 };

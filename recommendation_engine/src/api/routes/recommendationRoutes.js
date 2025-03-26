@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const recommendationController = require('../controllers/recommendationController');
-const { auth } = require('../middleware/auth'); // Fix: Correct import with destructuring
+const { auth } = require('../middleware/auth');
 const validate = require('../middleware/validation');
 const recommendationValidator = require('../validators/recommendationValidator');
 
@@ -33,6 +33,11 @@ router.post(
   '/feedback/:recommendationId',
   validate(recommendationValidator.feedbackSchema),
   recommendationController.saveFeedback
+);
+
+router.post(
+  '/update-preferences',
+  recommendationController.updateUserPreferences
 );
 
 module.exports = router;

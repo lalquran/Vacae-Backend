@@ -18,10 +18,12 @@ const auth = (req, res, next) => {
     
     // Verify the token
     const decoded = jwt.verify(token, config.JWT_SECRET);
+
+    console.log("DECODED: ", decoded);
     
     // Attach user info to request
     req.user = {
-      userId: decoded.userId,
+      userId: decoded.id,
       email: decoded.email,
       role: decoded.role
     };

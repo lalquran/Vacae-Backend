@@ -1,19 +1,33 @@
 const logger = require('../utils/logger');
 const profileService = require('../services/profileService');
+const destinationService = require('../services/destinationService');
 const Recommendation = require('../models/recommendation');
+const UserPreference = require('../models/userPreference');
+const UserToken = require('../models/userToken');
 const { Op } = require('sequelize');
-const { getCache, setCache } = require('../config/redis');
-const config = require('../config/settings');
+const jwt = require('jsonwebtoken');
 
 /**
  * Background task to update user feature vectors for recommendations
- * This task should run periodically to ensure user preferences are up to date
  */
 const updateUserFeaturesTask = async (data) => {
   try {
     const { userId } = data;
     
     logger.info(`Starting feature update task for user ${userId}`);
+    
+    // Get user token for service-to-service communication
+    const tokenRecord = await UserToken.findOne({
+      where: { 
+        userId,
+        expiresAt: { [Op.gt]: new Date() } // Only valid tokens
+      }
+    });
+    
+    if (!tokenRecord) {
+      logger.warn(`No valid token found for user ${userId}, skipping preference update`);
+      return { success: false, reason: 'no_valid_token' };
+    }
     
     // Get user feedback history
     const feedbackHistory = await Recommendation.findAll({
@@ -38,36 +52,46 @@ const updateUserFeaturesTask = async (data) => {
       };
     }
     
-    // Get user profile and current preferences
-    const userProfile = await profileService.getUserProfile(userId);
+    // Get destination details for feedback items
+    const destinationIds = feedbackHistory.map(item => item.destinationId);
+    const destinations = await destinationService.getDestinationDetails(destinationIds);
+    
+    // Map destinations by ID for easy lookup
+    const destinationMap = {};
+    destinations.forEach(dest => {
+      destinationMap[dest.id] = dest;
+    });
+    
+    // Get current user preferences
+    const userProfile = await profileService.getUserProfile(userId, tokenRecord.token);
     if (!userProfile) {
       throw new Error(`User profile not found for ${userId}`);
     }
     
-    // Extract destination IDs from feedback
-    const destinationIds = feedbackHistory.map(item => item.destinationId);
-    
-    // Get destination details - assuming the service can fetch multiple at once
-    const destinations = await destinationService.getDestinationDetails(destinationIds);
-    
-    // Calculate updated preference weights based on user feedback
-    const updatedPreferences = calculateUpdatedPreferences(
-      userProfile.preferences,
-      feedbackHistory,
-      destinations
+    // Calculate preference adjustments based on feedback
+    const preferenceAdjustments = calculatePreferenceAdjustments(
+      feedbackHistory, 
+      destinationMap,
+      userProfile.preferences
     );
     
-    // Cache the updated preferences
-    if (config.REDIS_ENABLED) {
-      const cacheKey = `user_computed_preferences:${userId}`;
-      await setCache(cacheKey, JSON.stringify(updatedPreferences), 86400); // Cache for 24 hours
-    }
+    // Update user preferences in profile service
+    await updateUserPreferencesInProfileService(userId, preferenceAdjustments, tokenRecord.token);
     
-    logger.info(`Updated feature vectors for user ${userId}`);
+    // Store computed preferences locally for recommendation engine
+    await UserPreference.upsert({
+      userId,
+      ...preferenceAdjustments,
+      lastUpdated: new Date(),
+      source: 'derived'
+    });
+    
+    logger.info(`Updated preferences for user ${userId} based on ${feedbackHistory.length} feedback items`);
     
     return {
       success: true,
-      updated: true
+      updated: true,
+      adjustments: preferenceAdjustments
     };
   } catch (error) {
     logger.error('Error in update user features task:', error);
@@ -76,64 +100,70 @@ const updateUserFeaturesTask = async (data) => {
 };
 
 /**
- * Calculate updated user preferences based on feedback history
- * This is a simplified version for MVP
+ * Calculate preference adjustments based on feedback
  */
-const calculateUpdatedPreferences = (currentPreferences, feedbackHistory, destinations) => {
-  // Start with current preferences
-  const updatedPreferences = { ...currentPreferences };
-  
-  // Create a map of destination details for easier lookup
-  const destinationMap = destinations.reduce((map, dest) => {
-    map[dest.id] = dest;
-    return map;
-  }, {});
-  
-  // Track categories the user has shown positive feedback for
+const calculatePreferenceAdjustments = (feedbackHistory, destinationMap, currentPreferences) => {
+  // Initialize tracking for category preferences
   const categoryScores = {};
+  const categoryCount = {};
   
-  // Process feedback to adjust preferences
+  // Default preference object (for first-time users)
+  const defaultPreferences = {
+    categories: [],
+    costLevel: 3,
+    activityLevel: 'moderate'
+  };
+  
+  // Start with current preferences or defaults
+  const preferences = currentPreferences || defaultPreferences;
+  
+  // Process each feedback item
   feedbackHistory.forEach(feedback => {
     const destination = destinationMap[feedback.destinationId];
-    if (!destination) return;
+    if (!destination) return; // Skip if destination not found
     
-    // Calculate feedback score: 1 for accepted/completed, -1 for rejected
-    const feedbackScore = 
-      feedback.status === 'accepted' || feedback.status === 'completed' ? 1 : -1;
+    // Determine feedback score multiplier
+    let multiplier;
+    if (feedback.status === 'rejected') {
+      multiplier = -1; // Negative for rejected
+    } else if (feedback.status === 'completed') {
+      multiplier = feedback.rating ? (feedback.rating / 3) : 1; // Weight by rating if available
+    } else {
+      multiplier = 0.5; // Mild positive for just accepted
+    }
     
-    // Update category preferences
+    // Process category preferences
     if (destination.categories) {
       destination.categories.forEach(category => {
+        // Get category ID or name
+        const categoryId = typeof category === 'object' ? category.id || category.name : category;
+        
         // Initialize if not exists
-        if (!categoryScores[category.id]) {
-          categoryScores[category.id] = {
-            id: category.id,
-            name: category.name,
-            totalScore: 0,
-            count: 0
-          };
+        if (!categoryScores[categoryId]) {
+          categoryScores[categoryId] = 0;
+          categoryCount[categoryId] = 0;
         }
         
-        // Add this feedback to the category's score
-        categoryScores[category.id].totalScore += feedbackScore;
-        categoryScores[category.id].count++;
+        // Adjust score based on feedback
+        categoryScores[categoryId] += multiplier;
+        categoryCount[categoryId]++;
       });
     }
     
-    // Adjust cost level preference
-    if (destination.costLevel && feedbackScore === 1) {
-      // Gradual adjustment toward destinations user liked
-      const currentCostLevel = updatedPreferences.costLevel || 3;
-      updatedPreferences.costLevel = Math.round(
-        (currentCostLevel * 2 + destination.costLevel) / 3
+    // Process cost level preferences - adjust toward costs of liked places
+    if (feedback.status === 'completed' && destination.costLevel) {
+      preferences.costLevel = calculateWeightedAverage(
+        preferences.costLevel || 3,
+        destination.costLevel,
+        0.3 // How quickly to adjust (lower = slower adjustment)
       );
     }
     
-    // Adjust activity level preference based on visitDuration
-    if (destination.visitDuration && feedbackScore === 1) {
+    // Process activity level preferences
+    if (feedback.status === 'completed' && destination.visitDuration) {
       let preferredActivityLevel;
       
-      // Determine preferred activity level based on visit duration
+      // Map visit duration to activity level
       if (destination.visitDuration > 180) {
         preferredActivityLevel = 'relaxed';
       } else if (destination.visitDuration >= 60 && destination.visitDuration <= 180) {
@@ -142,33 +172,136 @@ const calculateUpdatedPreferences = (currentPreferences, feedbackHistory, destin
         preferredActivityLevel = 'active';
       }
       
-      // Update preferred activity level if different
-      if (preferredActivityLevel !== updatedPreferences.activityLevel) {
-        updatedPreferences.activityLevel = preferredActivityLevel;
+      // Gradually shift toward this activity level
+      if (preferredActivityLevel !== preferences.activityLevel) {
+        // Simple adjustment - in a more sophisticated system, 
+        // you'd use a probabilistic approach
+        preferences.activityLevel = preferredActivityLevel;
       }
     }
   });
   
-  // Update preferred categories based on scores
-  const preferredCategories = Object.values(categoryScores)
-    // Filter to categories with positive average score
-    .filter(category => (category.totalScore / category.count) > 0)
-    // Get IDs
-    .map(category => category.id);
+  // Calculate preferred categories based on feedback
+  const updatedCategories = Object.keys(categoryScores)
+    .filter(categoryId => {
+      // Only include categories with positive average scores
+      return categoryScores[categoryId] > 0;
+    });
   
-  // Update preferred categories array
-  updatedPreferences.categories = preferredCategories;
+  // Ensure we maintain some categories even for negative feedback
+  const finalCategories = updatedCategories.length > 0 
+    ? updatedCategories 
+    : (preferences.categories || []);
   
-  return updatedPreferences;
+  return {
+    categories: finalCategories,
+    costLevel: Math.round(preferences.costLevel || 3),
+    activityLevel: preferences.activityLevel || 'moderate',
+    lastUpdateReason: 'feedback_analysis',
+    feedbackCount: feedbackHistory.length
+  };
+};
+
+/**
+ * Calculate weighted average for numeric preferences
+ */
+const calculateWeightedAverage = (currentValue, newValue, weight) => {
+  return (currentValue * (1 - weight)) + (newValue * weight);
+};
+
+/**
+ * Update user preferences in profile service using user's token
+ */
+const updateUserPreferencesInProfileService = async (userId, preferenceAdjustments, authToken) => {
+  try {
+    logger.info(`Updating preferences in profile service for user ${userId}`);
+    
+    // Map our internal preferences to the format expected by the profile service
+    const profileServicePreferences = {
+      categories: {
+        // Map category scores for profile service format
+        // For each category in our adjustments, set a score of 4 (higher than default)
+        ...preferenceAdjustments.categories.reduce((acc, category) => {
+          acc[category] = 4; // Higher than default
+          return acc;
+        }, {})
+      },
+      // Map costLevel to budgetLevel
+      budgetLevel: mapCostLevelToBudgetLevel(preferenceAdjustments.costLevel),
+      // Map activityLevel
+      activityLevel: mapActivityLevelToProfileService(preferenceAdjustments.activityLevel),
+      // Any other preferences mappings...
+    };
+    
+    // Call profile service API with user token
+    const response = await axios.put(
+      `${config.USER_PROFILE_SERVICE_URL}/api/preferences`, // Adjust to match your actual endpoint
+      profileServicePreferences,
+      { 
+        headers: { 
+          Authorization: authToken
+        } 
+      }
+    );
+    
+    if (response.status === 200) {
+      logger.info(`Successfully updated preferences in profile service for user ${userId}`);
+      return true;
+    } else {
+      logger.warn(`Unexpected response from profile service: ${response.status}`);
+      return false;
+    }
+  } catch (error) {
+    logger.error(`Error updating preferences in profile service: ${error.message}`);
+    if (error.response) {
+      logger.error(`Response: ${error.response.status} - ${JSON.stringify(error.response.data)}`);
+    }
+    return false;
+  }
+};
+
+/**
+ * Map cost level to budget level for profile service
+ */
+const mapCostLevelToBudgetLevel = (costLevel) => {
+  const map = {
+    1: 'budget',
+    2: 'economy',
+    3: 'moderate',
+    4: 'luxury',
+    5: 'ultra-luxury'
+  };
+  return map[costLevel] || 'moderate';
+};
+
+/**
+ * Map activity level to profile service format
+ */
+const mapActivityLevelToProfileService = (activityLevel) => {
+  const map = {
+    'relaxed': 'low',
+    'moderate': 'medium',
+    'active': 'high'
+  };
+  return map[activityLevel] || 'medium';
 };
 
 // Register the task with Celery
 const registerTasks = (celeryApp) => {
-  celeryApp.register('tasks.update_user_features', updateUserFeaturesTask);
-  logger.info('Registered update_user_features task with Celery');
+  // Only register if we have the register method (our fake client)
+  if (celeryApp && typeof celeryApp.register === 'function') {
+    celeryApp.register('tasks.update_user_features', updateUserFeaturesTask);
+    logger.info('Registered update_user_features task with Celery');
+    return true;
+  }
+  
+  // For real celery, we'd need a worker process
+  logger.info('Task registration skipped - requires external Celery worker in production');
+  return false;
 };
 
 module.exports = {
   updateUserFeaturesTask,
+  updateUserPreferencesInProfileService,
   registerTasks
 };

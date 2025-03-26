@@ -143,8 +143,16 @@ const getWeatherForLocation = async (location, date) => {
 
 // Register the task with Celery
 const registerTasks = (celeryApp) => {
-  celeryApp.register('tasks.generate_recommendations', generateRecommendationsTask);
-  logger.info('Registered generate_recommendations task with Celery');
+  // Only register if we have the register method (our fake client)
+  if (celeryApp && typeof celeryApp.register === 'function') {
+    celeryApp.register('tasks.generate_recommendations', generateRecommendationsTask);
+    logger.info('Registered generate_recommendations task with Celery');
+    return true;
+  }
+  
+  // For real celery, we'd need a worker process
+  logger.info('Task registration skipped - requires external Celery worker in production');
+  return false;
 };
 
 module.exports = {

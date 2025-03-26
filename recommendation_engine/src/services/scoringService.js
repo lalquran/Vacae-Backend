@@ -3,15 +3,37 @@ const config = require('../config/settings');
 const logger = require('../utils/logger');
 const destinationService = require('./destinationService');
 const profileService = require('./profileService');
+const UserPreference = require('../models/userPreference');
 
 /**
  * Calculate scores for destinations based on user preferences
  * This is the core recommendation algorithm for MVP
  */
-const scoreDestinations = async (userId, destinationIds, context = {}) => {
+const scoreDestinations = async (userId, destinationIds, context = {}, authToken=null) => {
   try {
-    // Get user profile data
-    const userProfile = await profileService.getUserProfile(userId);
+    const learnedPreferences = await UserPreference.findOne({
+      where: { userId }
+    });
+
+    let userProfile;
+    
+    if (learnedPreferences && learnedPreferences.categories.length > 0) {
+      logger.info(`Using learned preferences for user ${userId}`);
+      userProfile = {
+        userId,
+        preferences: {
+          categories: learnedPreferences.categories,
+          costLevel: learnedPreferences.costLevel,
+          activityLevel: learnedPreferences.activityLevel
+        }
+      };
+    } 
+    else {
+      // Fall back to profile service
+      logger.info(`No learned preferences, using profile for user ${userId}`);
+      userProfile = await profileService.getUserProfile(userId, authToken);
+    }
+    
     if (!userProfile) {
       throw new Error('User profile not found');
     }
@@ -60,19 +82,35 @@ const scoreDestinations = async (userId, destinationIds, context = {}) => {
 /**
  * Calculate how well a destination matches user preferences
  */
-const calculatePreferenceScore = (destination, userProfile) => {
+ const calculatePreferenceScore = (destination, userProfile) => {
   let score = 0.5; // Start with neutral score
   
   // Category match
   const userCategories = userProfile.preferences.categories || [];
-  const destinationCategories = destination.categories || [];
   
+  // Get destination categories - handle different formats
+  let destinationCategories = [];
+  if (destination.categories) {
+    destinationCategories = destination.categories.map(cat => 
+      typeof cat === 'object' ? cat.id || cat.name : cat
+    );
+  }
+  
+  // Find overlap between user categories and destination categories
   const categoryOverlap = destinationCategories.filter(category => 
-    userCategories.includes(category.id)
+    userCategories.includes(category)
   ).length;
   
   if (destinationCategories.length > 0) {
     score += 0.3 * (categoryOverlap / destinationCategories.length);
+  }
+  
+  // Check if this is an excluded activity
+  if (userProfile.preferences.excludedActivities && 
+      userProfile.preferences.excludedActivities.some(act => 
+        destinationCategories.includes(act)
+      )) {
+    score -= 0.4; // Strong penalty for excluded activities
   }
   
   // Cost level match (penalize if too far from preferred cost level)
@@ -85,7 +123,7 @@ const calculatePreferenceScore = (destination, userProfile) => {
     if (userProfile.preferences.activityLevel === 'relaxed' && destination.visitDuration > 120) {
       score += 0.1;
     } else if (userProfile.preferences.activityLevel === 'moderate' && 
-               destination.visitDuration >= 60 && destination.visitDuration <= 180) {
+              destination.visitDuration >= 60 && destination.visitDuration <= 180) {
       score += 0.1;
     } else if (userProfile.preferences.activityLevel === 'active' && destination.visitDuration < 120) {
       score += 0.1;

@@ -9,6 +9,8 @@ const errorHandler = require('./api/middleware/errorHandler');
 const tasks = require('./tasks');
 const config = require('./config/settings');
 const logger = require('./utils/logger');
+const { Op } = require('sequelize');
+const UserToken = require('./models/userToken');
 
 // Initialize Express app
 const app = express();
@@ -38,21 +40,34 @@ app.use((req, res, next) => {
 // Routes
 app.use('/api/recommendations', recommendationRoutes);
 
-// Health check endpoint
-app.get('/health', (req, res) => {
-  res.status(200).json({ 
-    status: 'ok',
-    services: {
-      database: sequelize.authenticate().then(() => true).catch(() => false),
-      redis: redis.getClient() && redis.getClient().isReady,
-      rabbitmq: rabbitmq.getConnection() && rabbitmq.getConnection().isConnected()
+// Health check endpoint with proper Promise handling
+app.get('/health', async (req, res) => {
+  try {
+    // Check database connection
+    let dbStatus;
+    try {
+      await sequelize.authenticate();
+      dbStatus = true;
+    } catch (error) {
+      dbStatus = false;
     }
-  });
-});
-
-// Metrics endpoint (for internal monitoring)
-app.get('/metrics', (req, res) => {
-  res.status(200).json(require('./utils/metrics').getAllMetrics());
+    
+    // Return health status
+    res.status(200).json({ 
+      status: 'ok',
+      services: {
+        database: dbStatus,
+        redis: redis.getClient() ? redis.getClient().isReady || false : false,
+        rabbitmq: rabbitmq.getConnection() ? true : false
+      }
+    });
+  } catch (error) {
+    logger.error('Error in health check:', error);
+    res.status(500).json({
+      status: 'error',
+      message: 'Error checking service health'
+    });
+  }
 });
 
 // Error handling
@@ -88,17 +103,49 @@ app.listen(PORT, async () => {
   const enableRabbitMQ = process.env.RABBITMQ_ENABLED === 'true';
   if (enableRabbitMQ) {
     try {
-      await rabbitmq.initRabbitMQ();
-      tasks.registerAllTasks();
-      logger.info('RabbitMQ initialized successfully');
+      const rabbitInitialized = await rabbitmq.initRabbitMQ();
+      if (rabbitInitialized) {
+        logger.info('RabbitMQ initialized successfully');
+        
+        // Get the celery client
+        const celeryClient = rabbitmq.getCeleryClient();
+        if (celeryClient) {
+          logger.info('Registering tasks with Celery');
+          tasks.registerAllTasks();
+        } else {
+          logger.warn('Celery client unavailable, skipping task registration');
+        }
+      }
     } catch (error) {
-      logger.warn('RabbitMQ initialization failed. Background tasks will not be available.');
+      logger.warn('RabbitMQ initialization failed, continuing without background tasks');
     }
   } else {
     logger.info('RabbitMQ is disabled, skipping initialization');
   }
-  
+
+  startSchedulers();
   logger.info('Recommendation Engine Service initialization complete');
 });
+
+const startSchedulers = () => {
+  // Cleanup expired tokens every hour
+  setInterval(async () => {
+    try {
+      const deleted = await UserToken.destroy({
+        where: {
+          expiresAt: { [Op.lt]: new Date() }
+        }
+      });
+      
+      if (deleted > 0) {
+        logger.info(`Cleaned up ${deleted} expired user tokens`);
+      }
+    } catch (error) {
+      logger.error('Error cleaning up expired tokens:', error);
+    }
+  }, 60 * 60 * 1000); // 1 hour
+  
+  logger.info('Token cleanup scheduler started');
+};
 
 module.exports = app;
